@@ -8,6 +8,12 @@ This tool automates the aggregation and QA of daily-grain marketing data for mon
 - Handles missing or invalid Spend values by treating them as 0.0
 - Outputs a clean CSV (`instructions_output.csv`) ready for reporting
 - Logs any data issues found during processing
+- **Diagnostics:**
+  - Normalizes column names (removes leading/trailing spaces)
+  - Checks for required columns and warns if any are missing
+  - Warns if any rows have invalid or missing dates
+  - Warns if any Spend or Impressions values are negative
+  - Prints summary statistics for Spend and Impressions
 
 ## Requirements
 - Python 3.8+
@@ -45,10 +51,18 @@ The output file (`instructions_output.csv`) contains the following columns:
 - `Spend` (numeric, sum for the group)
 - `Impressions` (numeric, sum for the group)
 
-## Troubleshooting
-- If you see a `DtypeWarning`, it is safe to ignore unless you have issues with specific columns.
-- All Spend values are cleaned and converted to numeric. Invalid or missing values are set to 0.0.
-- If you encounter errors, ensure your input file matches the expected column structure (see sample header in `data.csv`).
+## Diagnostics & Troubleshooting
+- **Column Normalization:** The script removes leading/trailing spaces from column names and prints both original and normalized names.
+- **Required Columns:** If any required columns are missing, the script will print an error and may not proceed.
+- **Date Validation:** If any rows have invalid or missing dates in the `Day of date` column, a warning will be printed with the count of affected rows. These rows will have `NaN` for their month and may be grouped together or excluded in further processing.
+- **Negative Values:** The script warns if any Spend or Impressions values are negative.
+- **Summary Statistics:** The script prints summary statistics (count, mean, min, max, etc.) for Spend and Impressions after cleaning.
+- **No Data Issues:** If no issues are found, the script will print `No data issues found.`
+
+### What to do if you see warnings
+- **Invalid or missing dates:** Review the affected rows in your input file. You may want to correct or remove them if they are important for your analysis.
+- **Missing columns:** Ensure your input file matches the expected column structure (see sample header in `data.csv`).
+- **Negative values:** Check if negative Spend or Impressions are expected in your data. If not, investigate and correct them in your source file.
 
 ## License
-MIT License
+MIT License 
