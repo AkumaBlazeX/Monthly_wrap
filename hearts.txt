@@ -1,0 +1,87 @@
+import pandas as pd
+import numpy as np
+
+# -----------------------------
+# Load Input Files
+# -----------------------------
+filename = input("Enter data file name (e.g., data.csv): ")
+instructions_file = input("Enter instructions file name (e.g., instructions.csv): ")
+
+# Load data
+raw_data = pd.read_csv(filename, parse_dates=['Day of date'])
+instructions = pd.read_csv(instructions_file, parse_dates=['month'])
+
+# Normalize column names
+raw_data.columns = raw_data.columns.str.lower()
+instructions.columns = instructions.columns.str.lower()
+
+# Clean numeric columns
+for col in ['spend', 'impressions', 'data_spend', 'data_impressions', 'correct_spend', 'correct_impressions', 'ecpm']:
+    for df in [raw_data, instructions]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(',', '').str.replace('$', ''),
+                errors='coerce'
+            )
+
+# Drop unnamed columns
+raw_data = raw_data.loc[:, ~raw_data.columns.str.contains('unnamed', case=False)]
+
+# Add 'month' column
+raw_data['month'] = raw_data['day of date'].dt.to_period('M')
+instructions['month'] = instructions['month'].dt.to_period('M')
+
+# Copy and prepare
+adjusted = raw_data.copy()
+instructions['status'] = None
+
+# -----------------------------
+# Apply Adjustments
+# -----------------------------
+for index, row in instructions.iterrows():
+    method = str(row['method']).lower()
+    pkg = str(row['package']).lower()
+    month = row['month']
+
+    correct_spend = row.get('correct_spend')
+    correct_impressions = row.get('correct_impressions')
+    ecpm = row.get('ecpm')
+
+    mask = (
+        (adjusted['package'].astype(str).str.lower() == pkg) &
+        (adjusted['month'] == month)
+    )
+
+    if adjusted[mask].empty:
+        print(f"\nERROR: No match found for package: {pkg}, month: {month}")
+        instructions.loc[index, 'status'] = 'error: no match found'
+        continue
+
+    actual_spend = adjusted.loc[mask, 'spend'].sum()
+    actual_impressions = adjusted.loc[mask, 'impressions'].sum()
+
+    if pd.notna(correct_impressions) and actual_impressions > 0:
+        scale = correct_impressions / actual_impressions
+        adjusted.loc[mask, 'impressions'] *= scale
+
+    if method == 'cpm' and pd.notna(ecpm):
+        adjusted.loc[mask, 'spend'] = adjusted.loc[mask, 'impressions'] * (ecpm / 1000)
+
+    if method in ['flat fee', 'added value', 'takeover'] and pd.notna(correct_spend):
+        spend_diff = correct_spend - actual_spend
+        total_imps = adjusted.loc[mask, 'impressions'].sum()
+        if total_imps > 0:
+            ratio = adjusted.loc[mask, 'impressions'] / total_imps
+            adjusted.loc[mask, 'spend'] += ratio * spend_diff
+
+    instructions.loc[index, 'status'] = 'applied'
+
+# -----------------------------
+# Save Output
+# -----------------------------
+adjusted.to_csv("adjusted_output.csv", index=False, float_format="%.2f")
+instructions.to_csv("instructions_with_status.csv", index=False, float_format="%.2f")
+
+print("\n✅ Processing complete. Files saved:")
+print("- adjusted_output.csv")
+print("- instructions_with_status.csv")
