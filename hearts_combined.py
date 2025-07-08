@@ -1,8 +1,27 @@
+"""
+hearts_combined.py
+------------------
+Production script for applying media spend corrections to daily-grain data.
+
+USAGE:
+    python3 hearts_combined.py
+    # When prompted, enter:
+    #   - data file name (e.g., data.csv)
+    #   - instructions file name (e.g., instructions.csv)
+    #   - year (e.g., 2025)
+
+Outputs:
+    - adjusted_output_combined.csv
+    - instructions_with_status_combined.csv
+    - hearts_combined.log (log file)
+
+"""
 import pandas as pd
 import numpy as np
 import warnings
 import logging
 import time
+import sys
 
 # Setup logging
 logging.basicConfig(filename='hearts_combined.log',
@@ -21,9 +40,13 @@ warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
 # -----------------------------
 # User Inputs
 # -----------------------------
-data_file = input("Enter data file name (e.g., data.csv): ").strip()
-instructions_file = input("Enter instructions file name (e.g., instructions.csv): ").strip()
-year = input("Enter the year for the data (e.g., 2025): ").strip()
+try:
+    data_file = input("Enter data file name (e.g., data.csv): ").strip()
+    instructions_file = input("Enter instructions file name (e.g., instructions.csv): ").strip()
+    year = input("Enter the year for the data (e.g., 2025): ").strip()
+except KeyboardInterrupt:
+    print("\nUser cancelled input. Exiting.")
+    sys.exit(1)
 
 logging.info(f"Inputs: data_file={data_file}, instructions_file={instructions_file}, year={year}")
 
@@ -35,7 +58,8 @@ try:
     instructions = pd.read_csv(instructions_file)
 except Exception as e:
     logging.error(f"Error loading files: {e}")
-    raise
+    print(f"Error loading files: {e}")
+    sys.exit(1)
 
 # Normalize column names and strip spaces
 raw_data.columns = raw_data.columns.str.lower().str.strip()
@@ -75,25 +99,20 @@ instructions['ecpm_ours'] = np.where(
     np.nan
 )
 
-# Map method from package for Video, use as-is for Audio/others
+# Map method from package for all channels (audio, video, etc.)
 def extract_method(row):
-    channel = str(row.get('channel', '')).lower().strip()
     pkg = str(row.get('package', ''))
-    method = str(row.get('method', '')).lower().strip()
-    if channel == 'video':
-        parts = pkg.split('_')
-        if len(parts) >= 2:
-            method_raw = parts[-2].strip().lower()
-            if method_raw in ['pav', 'jav']:
-                return 'added value'
-            elif method_raw in ['cpm', 'dcpm']:
-                return 'cpm'
-            else:
-                return method_raw
+    parts = pkg.split('_')
+    if len(parts) >= 2:
+        method_raw = parts[-2].strip().lower()
+        if method_raw in ['pav', 'jav']:
+            return 'added value'
+        elif method_raw in ['cpm', 'dcpm']:
+            return 'cpm'
         else:
-            return ''
+            return method_raw
     else:
-        return method
+        return ''
 
 instructions['method_ours'] = instructions.apply(extract_method, axis=1)
 
@@ -300,9 +319,10 @@ frames_status = []
 if adjusted_all:
     frames_adjusted.extend(adjusted_all)
     frames_status.extend(instructions_all)
-if 'adjusted_video' in locals() and not adjusted_video.empty:
-    frames_adjusted.append(adjusted_video)
-    frames_status.append(instructions_video)
+# The following lines were removed as per the edit hint to remove debug prints:
+# if 'adjusted_video' in locals() and not adjusted_video.empty:
+#     frames_adjusted.append(adjusted_video)
+#     frames_status.append(instructions_video)
 if not adjusted_social.empty:
     frames_adjusted.append(adjusted_social)
     frames_status.append(instructions_social)
