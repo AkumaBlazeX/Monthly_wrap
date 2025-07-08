@@ -1,68 +1,60 @@
-# Monthly Wrap Report QA Automation Tool
+# Hearts Combined Script
 
-This tool automates the aggregation and QA of daily-grain marketing data for monthly wrap reports. It processes a CSV file (e.g., `data.csv`) containing campaign, package, spend, and impression data, and outputs a summarized instructions file for further analysis or reporting.
+## What does this script actually do?
 
-## Features
-- Groups data by month and unique package (or campaign if package is missing)
-- Sums Spend and Impressions for each group
-- Handles missing or invalid Spend values by treating them as 0.0
-- Outputs a clean CSV (`instructions_output.csv`) ready for reporting
-- Logs any data issues found during processing
-- **Diagnostics:**
-  - Normalizes column names (removes leading/trailing spaces)
-  - Checks for required columns and warns if any are missing
-  - Warns if any rows have invalid or missing dates
-  - Warns if any Spend or Impressions values are negative
-  - Prints summary statistics for Spend and Impressions
+This script helps you take your daily media spend data (from multiple channels like audio, video, and social) and apply a set of business rules or corrections from an instructions file. The main goal: make sure your final numbers match what you want—especially making sure spend is zeroed out for any package or campaign where it should be.
 
-## Requirements
-- Python 3.8+
-- pandas
-- numpy
+## How does it work?
 
-## Setup
-1. **Clone the repository**
-2. **Create a virtual environment (recommended):**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-3. **Install dependencies:**
-   ```bash
-   pip install pandas numpy
-   ```
+1. **You provide your files.**
+   - When you run the script, it will ask you for your data file (e.g., `data.csv`), your instructions file (e.g., `instructions.csv`), and the year you want to process.
 
-## Usage
-1. Place your input data file (e.g., `data.csv`) in the project directory.
-2. Run the script:
-   ```bash
-   source venv/bin/activate  # if not already activated
-   python generate_instructions.py
-   ```
-3. When prompted, enter the name of your data file (e.g., `data.csv`).
-4. The output will be saved as `instructions_output.csv` in the same directory.
+2. **It cleans and prepares everything.**
+   - The script standardizes column names, cleans up numbers (so '0', '0.00', and 0 all mean the same thing), and makes sure dates and periods are in a format that can be matched.
 
-## Output
-The output file (`instructions_output.csv`) contains the following columns:
-- `channel`
-- `campaign_name` (blank if package is present)
-- `package` (blank if not present)
-- `month` (YYYY-MM)
-- `Spend` (numeric, sum for the group)
-- `Impressions` (numeric, sum for the group)
+3. **It goes channel by channel.**
+   - For each channel (audio, video, social), it looks at the instructions and finds the matching rows in your daily data.
+   - For each instruction, it:
+     - Finds all the matching rows (by channel, package/campaign, and period/month).
+     - If the instruction says spend should be zero, it sets all those rows' spend to zero—no matter what.
+     - Otherwise, it applies any scaling, CPM, or flat fee logic as needed, so your numbers match the instructions.
 
-## Diagnostics & Troubleshooting
-- **Column Normalization:** The script removes leading/trailing spaces from column names and prints both original and normalized names.
-- **Required Columns:** If any required columns are missing, the script will print an error and may not proceed.
-- **Date Validation:** If any rows have invalid or missing dates in the `Day of date` column, a warning will be printed with the count of affected rows. These rows will have `NaN` for their month and may be grouped together or excluded in further processing.
-- **Negative Values:** The script warns if any Spend or Impressions values are negative.
-- **Summary Statistics:** The script prints summary statistics (count, mean, min, max, etc.) for Spend and Impressions after cleaning.
-- **No Data Issues:** If no issues are found, the script will print `No data issues found.`
+4. **It double-checks at the end.**
+   - Even after all the above, it does a final sweep: for every instruction that says spend should be zero, it goes back and zeros out any matching rows in the final output. This is your safety net.
 
-### What to do if you see warnings
-- **Invalid or missing dates:** Review the affected rows in your input file. You may want to correct or remove them if they are important for your analysis.
-- **Missing columns:** Ensure your input file matches the expected column structure (see sample header in `data.csv`).
-- **Negative values:** Check if negative Spend or Impressions are expected in your data. If not, investigate and correct them in your source file.
+5. **It saves your results.**
+   - You get an adjusted output file (`adjusted_output_combined.csv`) with all the corrections applied.
+   - You also get a status file (`instructions_with_status_combined.csv`) that tells you which instructions were applied and if any didn't match.
+   - A log file (`hearts_combined.log`) is created so you can see what happened, including any warnings or rows that didn't match.
 
-## License
-MIT License 
+## What do you need to run it?
+- Python 3 and pandas installed.
+- Your daily data file (CSV, must have a `Day of date` column and all your usual campaign columns).
+- Your instructions file (CSV, must have at least `channel`, `package` or `campaign_name`, `month`, and `correct_spend`).
+
+## What will you see?
+- When you run the script, you'll be prompted for your filenames and year.
+- The script will process everything and print a success message when done.
+- If there are any issues (like a package in the instructions that doesn't match your data), you'll see a warning in the log file.
+
+## Tips and troubleshooting
+- If you see spend that isn't zeroed when you expect, check that `correct_spend` in your instructions is really a number (not a string or blank).
+- If you get a warning about no match found, double-check your package/campaign names and periods in both files.
+- The log file is your friend! It will tell you exactly what was matched, what was zeroed, and what was skipped.
+- For big files, the script is pretty fast, but make sure your computer has enough memory.
+
+## Customizing the script
+- Want to keep different columns in your output? Edit the `header` list in the script.
+- Need to change how corrections are applied? Look for the per-instruction logic in the script and tweak as needed.
+- Want more logging? Add more `logging.info()` or `logging.warning()` calls wherever you want more detail.
+
+---
+
+**In short:**
+- You give it your data and instructions.
+- It makes sure your spend and impressions match your business rules.
+- It double-checks that zeros are really zeros.
+- You get clean, corrected output and a log of everything that happened.
+
+If you have questions or want to tweak how it works, just open up the script and make it your own!
+
