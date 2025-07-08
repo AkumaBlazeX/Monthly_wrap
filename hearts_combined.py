@@ -1,0 +1,217 @@
+import pandas as pd
+import numpy as np
+import warnings
+import logging
+import time
+
+# Setup logging
+logging.basicConfig(filename='hearts_combined.log',
+                    filemode='w',
+                    level=logging.INFO,
+                    format='%(asctime)s %(levelname)s: %(message)s')
+
+start_time = time.time()
+
+# Suppress non-critical warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=pd.errors.DtypeWarning)
+warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
+
+# -----------------------------
+# User Inputs
+# -----------------------------
+data_file = input("Enter data file name (e.g., data.csv): ").strip()
+instructions_file = input("Enter instructions file name (e.g., instructions.csv): ").strip()
+year = input("Enter the year for the data (e.g., 2025): ").strip()
+
+logging.info(f"Inputs: data_file={data_file}, instructions_file={instructions_file}, year={year}")
+
+# -----------------------------
+# Load and Normalize Data
+# -----------------------------
+try:
+    raw_data = pd.read_csv(data_file, parse_dates=['Day of date'])
+    instructions = pd.read_csv(instructions_file)
+except Exception as e:
+    logging.error(f"Error loading files: {e}")
+    raise
+
+# Normalize column names and strip spaces
+raw_data.columns = raw_data.columns.str.lower().str.strip()
+instructions.columns = instructions.columns.str.lower().str.strip()
+
+# Clean numeric columns in both dataframes
+for col in ['spend', 'impressions', 'data_spend', 'data_impressions', 'correct_spend', 'correct_impressions', 'ecpm']:
+    for df in [raw_data, instructions]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(',', '').str.replace('$', '').str.strip(),
+                errors='coerce'
+            )
+
+# Drop unnamed columns
+raw_data = raw_data.loc[:, ~raw_data.columns.str.contains('unnamed', case=False)]
+
+# Map month names to numbers
+month_map = {m: i for i, m in enumerate([
+    'january','february','march','april','may','june','july','august','september','october','november','december'], 1)}
+
+# Use a string version of the month for mapping
+instructions['month_str'] = instructions['month'].astype(str)
+instructions['month_num'] = instructions['month_str'].str.strip().str.lower().map(month_map)
+instructions['period'] = pd.to_datetime(
+    year + '-' + instructions['month_num'].astype(str) + '-01',
+    errors='coerce'
+).dt.to_period('M')
+
+# Normalize month in raw_data
+raw_data['period'] = raw_data['day of date'].dt.to_period('M')
+
+# Calculate ecpm_ours for each instruction (if possible)
+instructions['ecpm_ours'] = np.where(
+    (instructions['correct_spend'].notna()) & (instructions['correct_impressions'].notna()) & (instructions['correct_impressions'] > 0),
+    instructions['correct_spend'] / instructions['correct_impressions'] * 1000,
+    np.nan
+)
+
+# Map method from package for Video, use as-is for Audio/others
+def extract_method(row):
+    channel = str(row.get('channel', '')).lower().strip()
+    pkg = str(row.get('package', ''))
+    method = str(row.get('method', '')).lower().strip()
+    if channel == 'video':
+        parts = pkg.split('_')
+        if len(parts) >= 2:
+            method_raw = parts[-2].strip().lower()
+            if method_raw in ['pav', 'jav']:
+                return 'added value'
+            elif method_raw in ['cpm', 'dcpm']:
+                return 'cpm'
+            else:
+                return method_raw
+        else:
+            return ''
+    else:
+        return method
+
+instructions['method_ours'] = instructions.apply(extract_method, axis=1)
+
+# Normalize channel values: treat 'Digital Audio' as 'Audio' for matching
+raw_data['channel'] = raw_data['channel'].str.strip().str.lower().replace({'digital audio': 'audio'})
+instructions['channel'] = instructions['channel'].str.strip().str.lower().replace({'digital audio': 'audio'})
+
+# Only process Audio and Video channels
+allowed_channels = ['audio', 'video']
+instructions = instructions[instructions['channel'].isin(allowed_channels)]
+raw_data = raw_data[raw_data['channel'].isin(allowed_channels)]
+
+# Prepare output DataFrames for audio
+adjusted_all = []
+instructions_all = []
+
+# Process each channel present in the instructions
+for channel in instructions['channel'].dropna().unique():
+    channel_mask = instructions['channel'].str.lower().str.strip() == channel.lower().strip()
+    inst_channel = instructions[channel_mask].copy()
+    data_channel = raw_data[raw_data['channel'].str.lower().str.strip() == channel.lower().strip()].copy()
+    if inst_channel.empty or data_channel.empty:
+        logging.info(f"No data for channel {channel}, skipping.")
+        continue
+    adjusted = data_channel.copy()
+    inst_channel['status'] = None
+    for index, row in inst_channel.iterrows():
+        method = str(row['method_ours']).lower()
+        pkg = str(row['package']).lower().strip()
+        period = row['period']
+        channel_val = str(row['channel']).lower().strip()
+        correct_spend = row.get('correct_spend')
+        correct_impressions = row.get('correct_impressions')
+        ecpm_ours = row.get('ecpm_ours')
+        mask = (
+            (adjusted['channel'].astype(str).str.lower().str.strip() == channel_val) &
+            (adjusted['package'].astype(str).str.lower().str.strip() == pkg) &
+            (adjusted['period'] == period)
+        )
+        if adjusted[mask].empty:
+            inst_channel.loc[index, 'status'] = 'error: no exact match found'
+            logging.warning(f"No match for channel={channel_val}, package={pkg}, period={period}")
+            continue
+        actual_spend = adjusted.loc[mask, 'spend'].sum()
+        actual_impressions = adjusted.loc[mask, 'impressions'].sum()
+        if pd.notna(correct_spend) and correct_spend == 0:
+            adjusted.loc[mask, 'spend'] = 0
+            inst_channel.loc[index, 'status'] = 'applied'
+            continue
+        if pd.notna(correct_impressions) and actual_impressions > 0:
+            scale = correct_impressions / actual_impressions
+            adjusted.loc[mask, 'impressions'] = adjusted.loc[mask, 'impressions'] * scale
+        if method == 'cpm' and pd.notna(ecpm_ours):
+            adjusted.loc[mask, 'spend'] = adjusted.loc[mask, 'impressions'] * (ecpm_ours / 1000)
+        if method in ['flat fee', 'added value', 'takeover'] and pd.notna(correct_spend):
+            spend_diff = correct_spend - actual_spend
+            total_imps = adjusted.loc[mask, 'impressions'].sum()
+            if total_imps > 0:
+                ratio = adjusted.loc[mask, 'impressions'] / total_imps
+                adjusted.loc[mask, 'spend'] = adjusted.loc[mask, 'spend'] + ratio * spend_diff
+        inst_channel.loc[index, 'status'] = 'applied'
+    adjusted_all.append(adjusted)
+    instructions_all.append(inst_channel)
+
+# Combine all channels
+adjusted_combined = pd.concat(adjusted_all, ignore_index=True)
+instructions_combined = pd.concat(instructions_all, ignore_index=True)
+
+# Filter columns for output to match data.csv plus period and month (case-insensitive)
+header = [
+    'funded_by','consumer_journey','target_market','campaign_initiatives','media_initiatives',
+    'channel','publisher','funnel','audience_stage','audience_segment','account','campaign_name',
+    'package','placement_name','creative_name','Day of date','Spend','Impressions','Clicks',
+    'Site Visits','BFE','Online Lines','Upgrade Lines'
+]
+col_map = {col.lower(): col for col in adjusted_combined.columns}
+output_cols = []
+for col in header:
+    col_lc = col.lower()
+    if col_lc in col_map:
+        output_cols.append(col_map[col_lc])
+for extra in ['period', 'month']:
+    if extra in adjusted_combined.columns and extra not in output_cols:
+        output_cols.append(extra)
+adjusted_combined = adjusted_combined[output_cols]
+
+# Brute-force zeroing: ensure all spend is zero where correct_spend == 0
+for _, row in instructions[instructions['correct_spend'] == 0].iterrows():
+    channel = str(row['channel']).lower().strip()
+    pkg = str(row['package']).lower().strip() if 'package' in row else None
+    camp = str(row['campaign_name']).lower().strip() if 'campaign_name' in row else None
+    period = row['period']
+    if pkg is not None:
+        mask = (
+            (adjusted_combined['channel'].astype(str).str.lower().str.strip() == channel) &
+            (adjusted_combined['package'].astype(str).str.lower().str.strip() == pkg) &
+            (adjusted_combined['period'] == period)
+        )
+    elif camp is not None:
+        mask = (
+            (adjusted_combined['channel'].astype(str).str.lower().str.strip() == channel) &
+            (adjusted_combined['campaign_name'].astype(str).str.lower().str.strip() == camp) &
+            (adjusted_combined['period'] == period)
+        )
+    else:
+        continue
+    adjusted_combined.loc[mask, 'spend'] = 0
+    if mask.sum() > 0:
+        logging.info(f"Brute-force zeroed spend for channel={channel}, package/campaign={pkg or camp}, period={period}, rows={mask.sum()}")
+
+# Save combined outputs
+adjusted_combined.to_csv("adjusted_output_combined.csv", index=False, float_format="%.2f")
+instructions_combined.to_csv("instructions_with_status_combined.csv", index=False, float_format="%.2f")
+
+logging.info("Processing complete. Files saved: adjusted_output_combined.csv, instructions_with_status_combined.csv")
+logging.info(f"Total runtime: {time.time() - start_time:.2f} seconds")
+
+print("\n✅ Processing complete. Files saved:")
+print("- adjusted_output_combined.csv")
+print("- instructions_with_status_combined.csv")
+print("- hearts_combined.log (log file)") 
